@@ -1,0 +1,289 @@
+"""
+Google Docs Document ID Analyzer and Tester
+Analyzes document ID patterns and tests incremental access
+"""
+
+import re
+import string
+import asyncio
+import httpx
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@dataclass
+class DocumentInfo:
+    id: str
+    url: str
+    accessible: bool
+    title: Optional[str] = None
+    content_preview: Optional[str] = None
+    error: Optional[str] = None
+
+class GoogleDocsAnalyzer:
+    def __init__(self):
+        self.base_urls = [
+            "https://docs.google.com/document/d/{}/edit",
+            "https://docs.google.com/document/d/{}/export?format=txt",
+            "https://docs.google.com/document/d/{}/pub"
+        ]
+        self.known_ids = [
+            "11ql80LUVCpuk-tyW0oZ0Pf-v0NmEbXuC5115fSAX-io",
+            "1ctvfdHRoRxdH87W7GlfKqQWOn0PbtrMjToHvD0x7DQc", 
+            "1kWuNeZzDg01f6nWDmFvpUdT646HZJxrSIJ7F8pwf0po"
+        ]
+        
+    def analyze_id_structure(self, doc_id: str) -> Dict:
+        """Analyze the structure of a document ID"""
+        return {
+            "length": len(doc_id),
+            "character_counts": {char: doc_id.count(char) for char in set(doc_id)},
+            "has_hyphens": "-" in doc_id,
+            "has_underscores": "_" in doc_id,
+            "alphanumeric_only": doc_id.replace("-", "").replace("_", "").isalnum(),
+            "starts_with_digit": doc_id[0].isdigit() if doc_id else False,
+            "pattern_analysis": self._analyze_patterns(doc_id)
+        }
+    
+    def _analyze_patterns(self, doc_id: str) -> Dict:
+        """Look for patterns in the document ID"""
+        patterns = {
+            "consecutive_digits": re.findall(r'\d+', doc_id),
+            "consecutive_letters": re.findall(r'[a-zA-Z]+', doc_id),
+            "special_chars": re.findall(r'[-_]', doc_id),
+            "alternating_pattern": self._check_alternating_pattern(doc_id)
+        }
+        return patterns
+    
+    def _check_alternating_pattern(self, doc_id: str) -> bool:
+        """Check if there's an alternating letter/digit pattern"""
+        if len(doc_id) < 2:
+            return False
+        
+        for i in range(len(doc_id) - 1):
+            curr_is_digit = doc_id[i].isdigit()
+            next_is_digit = doc_id[i + 1].isdigit()
+            if curr_is_digit == next_is_digit and doc_id[i] not in '-_':
+                continue
+        return True
+    
+    def generate_incremented_ids(self, base_id: str, increment_strategies: Optional[List[str]] = None) -> List[str]:
+        """Generate incremented versions of a document ID"""
+        if increment_strategies is None:
+            increment_strategies = ["last_char", "last_digit", "last_letter", "all_positions"]
+        
+        incremented_ids = []
+        
+        for strategy in increment_strategies:
+            if strategy == "last_char":
+                incremented_ids.extend(self._increment_last_char(base_id))
+            elif strategy == "last_digit":
+                incremented_ids.extend(self._increment_last_digit(base_id))
+            elif strategy == "last_letter":
+                incremented_ids.extend(self._increment_last_letter(base_id))
+            elif strategy == "all_positions":
+                incremented_ids.extend(self._increment_all_positions(base_id))
+        
+        return list(set(incremented_ids))  # Remove duplicates
+    
+    def _increment_last_char(self, doc_id: str, count: int = 5) -> List[str]:
+        """Increment the last character of the document ID"""
+        if not doc_id:
+            return []
+        
+        results = []
+        last_char = doc_id[-1]
+        base = doc_id[:-1]
+        
+        for i in range(1, count + 1):
+            if last_char.isdigit():
+                new_digit = (int(last_char) + i) % 10
+                results.append(base + str(new_digit))
+            elif last_char.islower():
+                new_char_ord = ord(last_char) + i
+                if new_char_ord <= ord('z'):
+                    results.append(base + chr(new_char_ord))
+            elif last_char.isupper():
+                new_char_ord = ord(last_char) + i
+                if new_char_ord <= ord('Z'):
+                    results.append(base + chr(new_char_ord))
+        
+        return results
+    
+    def _increment_last_digit(self, doc_id: str, count: int = 10) -> List[str]:
+        """Find and increment the last digit in the document ID"""
+        results = []
+        
+        last_digit_pos = -1
+        for i in range(len(doc_id) - 1, -1, -1):
+            if doc_id[i].isdigit():
+                last_digit_pos = i
+                break
+        
+        if last_digit_pos == -1:
+            return results
+        
+        last_digit = int(doc_id[last_digit_pos])
+        base_before = doc_id[:last_digit_pos]
+        base_after = doc_id[last_digit_pos + 1:]
+        
+        for i in range(1, count + 1):
+            new_digit = (last_digit + i) % 10
+            results.append(base_before + str(new_digit) + base_after)
+        
+        return results
+    
+    def _increment_last_letter(self, doc_id: str, count: int = 5) -> List[str]:
+        """Find and increment the last letter in the document ID"""
+        results = []
+        
+        last_letter_pos = -1
+        for i in range(len(doc_id) - 1, -1, -1):
+            if doc_id[i].isalpha():
+                last_letter_pos = i
+                break
+        
+        if last_letter_pos == -1:
+            return results
+        
+        last_letter = doc_id[last_letter_pos]
+        base_before = doc_id[:last_letter_pos]
+        base_after = doc_id[last_letter_pos + 1:]
+        
+        for i in range(1, count + 1):
+            if last_letter.islower():
+                new_char_ord = ord(last_letter) + i
+                if new_char_ord <= ord('z'):
+                    results.append(base_before + chr(new_char_ord) + base_after)
+            elif last_letter.isupper():
+                new_char_ord = ord(last_letter) + i
+                if new_char_ord <= ord('Z'):
+                    results.append(base_before + chr(new_char_ord) + base_after)
+        
+        return results
+    
+    def _increment_all_positions(self, doc_id: str, max_per_position: int = 2) -> List[str]:
+        """Try incrementing each position in the document ID"""
+        results = []
+        
+        for pos in range(len(doc_id)):
+            char = doc_id[pos]
+            base_before = doc_id[:pos]
+            base_after = doc_id[pos + 1:]
+            
+            for i in range(1, max_per_position + 1):
+                if char.isdigit():
+                    new_digit = (int(char) + i) % 10
+                    results.append(base_before + str(new_digit) + base_after)
+                elif char.islower():
+                    new_char_ord = ord(char) + i
+                    if new_char_ord <= ord('z'):
+                        results.append(base_before + chr(new_char_ord) + base_after)
+                elif char.isupper():
+                    new_char_ord = ord(char) + i
+                    if new_char_ord <= ord('Z'):
+                        results.append(base_before + chr(new_char_ord) + base_after)
+        
+        return results
+    
+    async def test_document_access(self, doc_id: str) -> DocumentInfo:
+        """Test if a document ID is accessible and extract basic info"""
+        doc_info = DocumentInfo(id=doc_id, url="", accessible=False)
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for url_template in self.base_urls:
+                url = url_template.format(doc_id)
+                doc_info.url = url
+                
+                try:
+                    response = await client.get(url, follow_redirects=True)
+                    
+                    if response.status_code == 200:
+                        doc_info.accessible = True
+                        
+                        content = response.text
+                        
+                        title_match = re.search(r'<title>(.*?)</title>', content, re.IGNORECASE)
+                        if title_match:
+                            doc_info.title = title_match.group(1).strip()
+                        
+                        text_content = re.sub(r'<[^>]+>', '', content)
+                        text_content = re.sub(r'\s+', ' ', text_content).strip()
+                        doc_info.content_preview = text_content[:200] + "..." if len(text_content) > 200 else text_content
+                        
+                        logger.info(f"Successfully accessed document {doc_id} via {url}")
+                        break
+                        
+                    elif response.status_code == 403:
+                        doc_info.error = "Access forbidden - document may be private"
+                    elif response.status_code == 404:
+                        doc_info.error = "Document not found"
+                    else:
+                        doc_info.error = f"HTTP {response.status_code}"
+                        
+                except Exception as e:
+                    doc_info.error = f"Request failed: {str(e)}"
+                    logger.error(f"Error accessing {url}: {e}")
+        
+        return doc_info
+    
+    async def batch_test_documents(self, doc_ids: List[str], delay: float = 1.0) -> List[DocumentInfo]:
+        """Test multiple document IDs with rate limiting"""
+        results = []
+        
+        for i, doc_id in enumerate(doc_ids):
+            logger.info(f"Testing document {i+1}/{len(doc_ids)}: {doc_id}")
+            
+            doc_info = await self.test_document_access(doc_id)
+            results.append(doc_info)
+            
+            if i < len(doc_ids) - 1:  # Don't delay after the last request
+                await asyncio.sleep(delay)
+        
+        return results
+
+async def main():
+    analyzer = GoogleDocsAnalyzer()
+    
+    print("=== Document ID Structure Analysis ===")
+    for i, doc_id in enumerate(analyzer.known_ids, 1):
+        print(f"\nDocument {i}: {doc_id}")
+        analysis = analyzer.analyze_id_structure(doc_id)
+        print(f"Length: {analysis['length']}")
+        print(f"Character distribution: {analysis['character_counts']}")
+        print(f"Patterns: {analysis['pattern_analysis']}")
+    
+    print("\n=== Testing Known Documents ===")
+    known_results = await analyzer.batch_test_documents(analyzer.known_ids)
+    
+    for result in known_results:
+        print(f"\nDocument ID: {result.id}")
+        print(f"Accessible: {result.accessible}")
+        print(f"Title: {result.title}")
+        print(f"Preview: {result.content_preview}")
+        if result.error:
+            print(f"Error: {result.error}")
+    
+    print("\n=== Testing Incremented IDs ===")
+    base_id = analyzer.known_ids[0]
+    incremented_ids = analyzer.generate_incremented_ids(base_id, ["last_char", "last_digit"])[:10]  # Limit to 10 for testing
+    
+    print(f"Generated {len(incremented_ids)} incremented IDs from base: {base_id}")
+    for inc_id in incremented_ids[:5]:  # Show first 5
+        print(f"  {inc_id}")
+    
+    incremented_results = await analyzer.batch_test_documents(incremented_ids[:5], delay=2.0)
+    
+    successful_finds = [r for r in incremented_results if r.accessible]
+    print(f"\nFound {len(successful_finds)} accessible documents from incremented IDs!")
+    
+    for result in successful_finds:
+        print(f"\n🎉 FOUND: {result.id}")
+        print(f"Title: {result.title}")
+        print(f"Preview: {result.content_preview}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
