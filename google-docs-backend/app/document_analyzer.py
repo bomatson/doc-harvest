@@ -284,11 +284,84 @@ class GoogleDocsAnalyzer:
         return results[:count]
     
     def _calculate_content_hash(self, content: str) -> str:
-        """Calculate SHA-256 hash of document content for uniqueness detection"""
-        normalized = re.sub(r'\s+', ' ', content.strip())
-        normalized = re.sub(r'var DOCS_timing.*?;', '', normalized)  # Remove timing variables
-        normalized = re.sub(r'nonce="[^"]*"', 'nonce=""', normalized)  # Remove nonces
-        normalized = re.sub(r'sid=[^&"]*', 'sid=', normalized)  # Remove session IDs
+        """Calculate SHA-256 hash of document content for uniqueness detection using text-only extraction"""
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(content, 'html.parser')
+            
+            title_elem = soup.find('title')
+            title = title_elem.get_text().strip() if title_elem else ""
+            
+            for script in soup(["script", "style", "noscript"]):
+                script.decompose()
+            
+            main_content = ""
+            
+            content_containers = [
+                soup.find('div', {'class': lambda x: x and 'kix-page' in str(x)}),
+                soup.find('div', {'id': 'contents'}),
+                soup.find('div', {'class': lambda x: x and 'doc-content' in str(x)}),
+                soup.find('body')
+            ]
+            
+            for container in content_containers:
+                if container:
+                    main_content = container.get_text(separator=' ', strip=True)
+                    break
+            
+            if not main_content:
+                main_content = soup.get_text(separator=' ', strip=True)
+            
+            text_content = f"{title}\n{main_content}"
+            
+            normalized = re.sub(r'\s+', ' ', text_content.strip())
+            
+            normalized = re.sub(r'Loading\.\.\.', '', normalized)
+            normalized = re.sub(r'Sign in.*?Google', '', normalized)
+            normalized = re.sub(r'Last edit was.*?ago', '', normalized)
+            normalized = re.sub(r'\d{1,2}:\d{2}:\d{2}\s*(AM|PM)', '', normalized)  # Remove timestamps
+            normalized = re.sub(r'Page \d+ of \d+', '', normalized)  # Remove page numbers
+            
+            normalized = re.sub(r'\s+', ' ', normalized).strip()
+            
+            return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+            
+        except ImportError:
+            return self._calculate_content_hash_fallback(content)
+        except Exception as e:
+            logger.warning(f"Error in content hashing: {e}, falling back to regex approach")
+            return self._calculate_content_hash_fallback(content)
+    
+    def _calculate_content_hash_fallback(self, content: str) -> str:
+        """Fallback content hashing using comprehensive regex normalization"""
+        title_match = re.search(r'<title>(.*?)</title>', content, re.IGNORECASE)
+        title = title_match.group(1).strip() if title_match else ""
+        
+        normalized = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        normalized = re.sub(r'<style[^>]*>.*?</style>', '', normalized, flags=re.DOTALL | re.IGNORECASE)
+        normalized = re.sub(r'<noscript[^>]*>.*?</noscript>', '', normalized, flags=re.DOTALL | re.IGNORECASE)
+        
+        text_content = re.sub(r'<[^>]+>', '', normalized)
+        
+        full_text = f"{title}\n{text_content}"
+        
+        normalized = re.sub(r'\s+', ' ', full_text.strip())
+        
+        normalized = re.sub(r'var DOCS_timing.*?;', '', normalized)
+        normalized = re.sub(r'nonce="[^"]*"', '', normalized)
+        normalized = re.sub(r'sid=[^&"]*', '', normalized)
+        normalized = re.sub(r'Loading\.\.\.', '', normalized)
+        normalized = re.sub(r'Sign in.*?Google', '', normalized)
+        normalized = re.sub(r'Last edit was.*?ago', '', normalized)
+        normalized = re.sub(r'\d{1,2}:\d{2}:\d{2}\s*(AM|PM)', '', normalized)
+        normalized = re.sub(r'Page \d+ of \d+', '', normalized)
+        
+        normalized = re.sub(r'DOCS_timing\[.*?\].*?;', '', normalized)
+        normalized = re.sub(r'new Date\(\)\.getTime\(\)', '', normalized)
+        normalized = re.sub(r'_reqid=[^&"]*', '', normalized)
+        normalized = re.sub(r'authuser=[^&"]*', '', normalized)
+        
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
         
         return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
     
