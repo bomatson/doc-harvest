@@ -10,6 +10,7 @@ python = "^3.12"
 fastapi = {extras = ["standard"], version = "^0.116.1"}
 psycopg = {extras = ["binary"], version = "^3.2.9"}
 httpx = "^0.28.1"
+beautifulsoup4 = "^4.13.4"
 
 
 [build-system]
