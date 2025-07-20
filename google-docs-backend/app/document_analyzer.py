@@ -7,6 +7,7 @@ import re
 import string
 import asyncio
 import httpx
+import hashlib
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 import logging
@@ -21,6 +22,7 @@ class DocumentInfo:
     accessible: bool
     title: Optional[str] = None
     content_preview: Optional[str] = None
+    content_hash: Optional[str] = None
     error: Optional[str] = None
 
 class GoogleDocsAnalyzer:
@@ -73,7 +75,7 @@ class GoogleDocsAnalyzer:
     def generate_incremented_ids(self, base_id: str, increment_strategies: Optional[List[str]] = None) -> List[str]:
         """Generate incremented versions of a document ID"""
         if increment_strategies is None:
-            increment_strategies = ["last_char", "last_digit", "last_letter", "all_positions"]
+            increment_strategies = ["last_char", "last_digit", "last_letter", "all_positions", "pattern_based"]
         
         incremented_ids = []
         
@@ -86,6 +88,8 @@ class GoogleDocsAnalyzer:
                 incremented_ids.extend(self._increment_last_letter(base_id))
             elif strategy == "all_positions":
                 incremented_ids.extend(self._increment_all_positions(base_id))
+            elif strategy == "pattern_based":
+                incremented_ids.extend(self._generate_pattern_based_ids(base_id))
         
         return list(set(incremented_ids))  # Remove duplicates
     
@@ -189,6 +193,105 @@ class GoogleDocsAnalyzer:
         
         return results
     
+    def _generate_pattern_based_ids(self, base_id: str, count: int = 20) -> List[str]:
+        """Generate IDs based on structural patterns found in known working IDs"""
+        results = []
+        
+        results.extend(self._test_hyphen_variations(base_id, count // 4))
+        results.extend(self._test_digit_sequence_patterns(base_id, count // 4))
+        results.extend(self._test_segment_boundaries(base_id, count // 4))
+        results.extend(self._test_length_variations(base_id, count // 4))
+        
+        return results
+    
+    def _test_hyphen_variations(self, base_id: str, count: int = 5) -> List[str]:
+        """Test variations with different hyphen positions based on known patterns"""
+        results = []
+        known_hyphen_positions = [[13, 23, 41], []]  # From analysis of known IDs
+        
+        for positions in known_hyphen_positions:
+            if len(positions) == 0:
+                new_id = base_id.replace('-', '')
+                if len(new_id) == 44:
+                    results.append(new_id)
+            else:
+                chars = list(base_id.replace('-', ''))
+                if len(chars) >= max(positions):
+                    for pos in sorted(positions, reverse=True):
+                        if pos < len(chars):
+                            chars.insert(pos, '-')
+                    new_id = ''.join(chars)
+                    if len(new_id) == 44:
+                        results.append(new_id)
+        
+        return results[:count]
+    
+    def _test_digit_sequence_patterns(self, base_id: str, count: int = 5) -> List[str]:
+        """Test variations in digit sequences based on patterns from known IDs"""
+        results = []
+        digit_sequences = re.findall(r'\d+', base_id)
+        
+        for i, seq in enumerate(digit_sequences):
+            if len(seq) >= 2:
+                try:
+                    num = int(seq)
+                    for delta in [-2, -1, 1, 2]:
+                        new_num = max(0, num + delta)
+                        new_seq = str(new_num).zfill(len(seq))
+                        new_id = base_id.replace(seq, new_seq, 1)
+                        if new_id != base_id:
+                            results.append(new_id)
+                except ValueError:
+                    continue
+        
+        return results[:count]
+    
+    def _test_segment_boundaries(self, base_id: str, count: int = 5) -> List[str]:
+        """Test variations at boundaries between letter and digit segments"""
+        results = []
+        
+        for i in range(len(base_id) - 1):
+            curr_char = base_id[i]
+            next_char = base_id[i + 1]
+            
+            if curr_char.isalpha() and next_char.isdigit():
+                chars = list(base_id)
+                chars[i], chars[i + 1] = chars[i + 1], chars[i]
+                results.append(''.join(chars))
+            elif curr_char.isdigit() and next_char.isalpha():
+                chars = list(base_id)
+                chars[i], chars[i + 1] = chars[i + 1], chars[i]
+                results.append(''.join(chars))
+        
+        return results[:count]
+    
+    def _test_length_variations(self, base_id: str, count: int = 5) -> List[str]:
+        """Test slight length variations while maintaining structure"""
+        results = []
+        
+        for i in range(0, len(base_id), len(base_id) // count):
+            if base_id[i] not in '-_':
+                new_id = base_id[:i] + base_id[i+1:]
+                if len(new_id) == 43:  # One less than standard 44
+                    results.append(new_id)
+        
+        for i in range(0, len(base_id), len(base_id) // count):
+            if base_id[i].isalnum():
+                new_id = base_id[:i] + base_id[i] + base_id[i:]
+                if len(new_id) == 45:  # One more than standard 44
+                    results.append(new_id)
+        
+        return results[:count]
+    
+    def _calculate_content_hash(self, content: str) -> str:
+        """Calculate SHA-256 hash of document content for uniqueness detection"""
+        normalized = re.sub(r'\s+', ' ', content.strip())
+        normalized = re.sub(r'var DOCS_timing.*?;', '', normalized)  # Remove timing variables
+        normalized = re.sub(r'nonce="[^"]*"', 'nonce=""', normalized)  # Remove nonces
+        normalized = re.sub(r'sid=[^&"]*', 'sid=', normalized)  # Remove session IDs
+        
+        return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+    
     async def test_document_access(self, doc_id: str) -> DocumentInfo:
         """Test if a document ID is accessible and extract basic info"""
         doc_info = DocumentInfo(id=doc_id, url="", accessible=False)
@@ -214,6 +317,8 @@ class GoogleDocsAnalyzer:
                         text_content = re.sub(r'\s+', ' ', text_content).strip()
                         doc_info.content_preview = text_content[:200] + "..." if len(text_content) > 200 else text_content
                         
+                        doc_info.content_hash = self._calculate_content_hash(content)
+                        
                         logger.info(f"Successfully accessed document {doc_id} via {url}")
                         break
                         
@@ -231,8 +336,10 @@ class GoogleDocsAnalyzer:
         return doc_info
     
     async def batch_test_documents(self, doc_ids: List[str], delay: float = 1.0) -> List[DocumentInfo]:
-        """Test multiple document IDs with rate limiting"""
+        """Test multiple document IDs with rate limiting and uniqueness detection"""
         results = []
+        seen_hashes = set()
+        unique_count = 0
         
         for i, doc_id in enumerate(doc_ids):
             logger.info(f"Testing document {i+1}/{len(doc_ids)}: {doc_id}")
@@ -240,10 +347,49 @@ class GoogleDocsAnalyzer:
             doc_info = await self.test_document_access(doc_id)
             results.append(doc_info)
             
+            if doc_info.accessible and doc_info.content_hash:
+                if doc_info.content_hash not in seen_hashes:
+                    seen_hashes.add(doc_info.content_hash)
+                    unique_count += 1
+                    logger.info(f"Found unique document: {doc_id} (hash: {doc_info.content_hash[:8]}...)")
+                else:
+                    logger.info(f"Found duplicate document: {doc_id} (same content as previous)")
+            
             if i < len(doc_ids) - 1:  # Don't delay after the last request
                 await asyncio.sleep(delay)
         
+        logger.info(f"Batch test complete: {len(results)} tested, {unique_count} unique documents found")
         return results
+    
+    def analyze_uniqueness(self, results: List[DocumentInfo]) -> Dict:
+        """Analyze the uniqueness of discovered documents"""
+        accessible_docs = [r for r in results if r.accessible]
+        if not accessible_docs:
+            return {
+                "total_tested": len(results),
+                "accessible_count": 0,
+                "unique_count": 0,
+                "duplicate_count": 0,
+                "uniqueness_rate": 0.0,
+                "unique_hashes": []
+            }
+        
+        hash_counts = {}
+        for doc in accessible_docs:
+            if doc.content_hash:
+                hash_counts[doc.content_hash] = hash_counts.get(doc.content_hash, 0) + 1
+        
+        unique_count = len(hash_counts)
+        duplicate_count = len(accessible_docs) - unique_count
+        
+        return {
+            "total_tested": len(results),
+            "accessible_count": len(accessible_docs),
+            "unique_count": unique_count,
+            "duplicate_count": duplicate_count,
+            "uniqueness_rate": unique_count / len(accessible_docs) if accessible_docs else 0.0,
+            "unique_hashes": list(hash_counts.keys())
+        }
 
 async def main():
     analyzer = GoogleDocsAnalyzer()

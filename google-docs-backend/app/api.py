@@ -27,7 +27,7 @@ class DocumentTestRequest(BaseModel):
 
 class IncrementRequest(BaseModel):
     base_id: str
-    strategies: List[str] = ["last_char", "last_digit", "last_letter"]
+    strategies: List[str] = ["last_char", "last_digit", "last_letter", "pattern_based"]
     max_increments: int = 10
     test_delay: float = 1.0
 
@@ -37,6 +37,7 @@ class DocumentResponse(BaseModel):
     accessible: bool
     title: Optional[str] = None
     content_preview: Optional[str] = None
+    content_hash: Optional[str] = None
     error: Optional[str] = None
 
 class AnalysisResponse(BaseModel):
@@ -86,6 +87,7 @@ async def test_single_document(document_id: str) -> DocumentResponse:
             accessible=doc_info.accessible,
             title=doc_info.title,
             content_preview=doc_info.content_preview,
+            content_hash=doc_info.content_hash,
             error=doc_info.error
         )
     except Exception as e:
@@ -103,6 +105,7 @@ async def test_multiple_documents(request: DocumentTestRequest) -> List[Document
                 accessible=doc.accessible,
                 title=doc.title,
                 content_preview=doc.content_preview,
+                content_hash=doc.content_hash,
                 error=doc.error
             )
             for doc in results
@@ -141,6 +144,8 @@ async def test_incremented_documents(request: IncrementRequest) -> Dict:
         successful = [r for r in results if r.accessible]
         failed = [r for r in results if not r.accessible]
         
+        uniqueness_analysis = analyzer.analyze_uniqueness(results)
+        
         return {
             "base_id": request.base_id,
             "strategies": request.strategies,
@@ -148,6 +153,9 @@ async def test_incremented_documents(request: IncrementRequest) -> Dict:
             "successful_count": len(successful),
             "failed_count": len(failed),
             "success_rate": len(successful) / len(results) if results else 0,
+            "unique_documents_count": uniqueness_analysis["unique_count"],
+            "duplicate_documents_count": uniqueness_analysis["duplicate_count"],
+            "uniqueness_rate": uniqueness_analysis["uniqueness_rate"],
             "successful_documents": [
                 DocumentResponse(
                     id=doc.id,
@@ -155,6 +163,7 @@ async def test_incremented_documents(request: IncrementRequest) -> Dict:
                     accessible=doc.accessible,
                     title=doc.title,
                     content_preview=doc.content_preview,
+                    content_hash=doc.content_hash,
                     error=doc.error
                 )
                 for doc in successful
@@ -166,6 +175,7 @@ async def test_incremented_documents(request: IncrementRequest) -> Dict:
                     accessible=doc.accessible,
                     title=doc.title,
                     content_preview=doc.content_preview,
+                    content_hash=doc.content_hash,
                     error=doc.error
                 )
                 for doc in failed
@@ -191,9 +201,20 @@ async def test_known_documents() -> List[DocumentResponse]:
                 accessible=doc.accessible,
                 title=doc.title,
                 content_preview=doc.content_preview,
+                content_hash=doc.content_hash,
                 error=doc.error
             )
             for doc in results
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Known documents test failed: {str(e)}")
+
+@app.post("/analyze-uniqueness")
+async def analyze_document_uniqueness(request: DocumentTestRequest) -> Dict:
+    """Analyze uniqueness of a set of document IDs"""
+    try:
+        results = await analyzer.batch_test_documents(request.document_ids, request.delay)
+        uniqueness_analysis = analyzer.analyze_uniqueness(results)
+        return uniqueness_analysis
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Uniqueness analysis failed: {str(e)}")

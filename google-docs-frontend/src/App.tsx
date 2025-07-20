@@ -14,6 +14,7 @@ interface DocumentInfo {
   accessible: boolean
   title?: string
   content_preview?: string
+  content_hash?: string
   error?: string
 }
 
@@ -24,6 +25,9 @@ interface TestResult {
   successful_count: number
   failed_count: number
   success_rate: number
+  unique_documents_count: number
+  duplicate_documents_count: number
+  uniqueness_rate: number
   successful_documents: DocumentInfo[]
   failed_documents: DocumentInfo[]
 }
@@ -36,15 +40,16 @@ function App() {
   const [knownDocs, setKnownDocs] = useState<DocumentInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState(0)
-  const [selectedStrategies, setSelectedStrategies] = useState(['last_char', 'last_digit'])
-  const [maxIncrements, setMaxIncrements] = useState(10)
+  const [selectedStrategies, setSelectedStrategies] = useState(['last_char', 'last_digit', 'pattern_based'])
+  const [maxIncrements, setMaxIncrements] = useState(20)
   const [testDelay, setTestDelay] = useState(1.0)
 
   const strategies = [
     { id: 'last_char', label: 'Last Character', description: 'Increment the last character' },
     { id: 'last_digit', label: 'Last Digit', description: 'Increment the last digit found' },
     { id: 'last_letter', label: 'Last Letter', description: 'Increment the last letter found' },
-    { id: 'all_positions', label: 'All Positions', description: 'Try incrementing each position' }
+    { id: 'all_positions', label: 'All Positions', description: 'Try incrementing each position' },
+    { id: 'pattern_based', label: 'Pattern Based (New)', description: 'Use structural patterns from known IDs' }
   ]
 
   useEffect(() => {
@@ -99,18 +104,6 @@ function App() {
     }
   }
 
-  const testSingleDocument = async (docId: string) => {
-    try {
-      const response = await fetch(`${API_BASE}/test-document/${encodeURIComponent(docId)}`, {
-        method: 'POST'
-      })
-      const data = await response.json()
-      return data
-    } catch (error) {
-      console.error('Single document test failed:', error)
-      return null
-    }
-  }
 
   return (
     <div className="min-h-screen bg-gray-50 p-4">
@@ -161,6 +154,9 @@ function App() {
                       min="1"
                       max="100"
                     />
+                    <p className="text-xs text-gray-500">
+                      Recommended: 20-50 for pattern-based testing
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Test Delay (seconds)</label>
@@ -260,6 +256,11 @@ function App() {
                           <div className="font-mono text-xs text-gray-600 break-all">
                             {doc.id}
                           </div>
+                          {doc.content_hash && (
+                            <div className="text-xs text-gray-500 font-mono mb-1">
+                              Hash: {doc.content_hash.substring(0, 16)}...
+                            </div>
+                          )}
                           {doc.content_preview && (
                             <div className="text-xs text-gray-500 line-clamp-2">
                               {doc.content_preview}
@@ -288,24 +289,41 @@ function App() {
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <div className="grid grid-cols-4 gap-4 text-center">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
                       <div>
                         <div className="text-2xl font-bold">{testResults.total_tested}</div>
                         <div className="text-sm text-gray-600">Total Tested</div>
                       </div>
                       <div>
                         <div className="text-2xl font-bold text-green-600">{testResults.successful_count}</div>
-                        <div className="text-sm text-gray-600">Found</div>
+                        <div className="text-sm text-gray-600">Accessible</div>
                       </div>
                       <div>
-                        <div className="text-2xl font-bold text-red-600">{testResults.failed_count}</div>
-                        <div className="text-sm text-gray-600">Not Found</div>
+                        <div className="text-2xl font-bold text-orange-600">{testResults.unique_documents_count || 0}</div>
+                        <div className="text-sm text-gray-600">Unique Docs</div>
                       </div>
                       <div>
-                        <div className="text-2xl font-bold">{(testResults.success_rate * 100).toFixed(1)}%</div>
-                        <div className="text-sm text-gray-600">Success Rate</div>
+                        <div className="text-2xl font-bold text-purple-600">
+                          {testResults.uniqueness_rate ? (testResults.uniqueness_rate * 100).toFixed(1) : '0.0'}%
+                        </div>
+                        <div className="text-sm text-gray-600">Uniqueness Rate</div>
                       </div>
                     </div>
+                    
+                    {testResults.duplicate_documents_count > 0 && (
+                      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mt-4">
+                        <div className="flex items-center">
+                          <div className="text-yellow-600 mr-2">⚠️</div>
+                          <div>
+                            <div className="font-medium text-yellow-800">Duplicate Content Detected</div>
+                            <div className="text-sm text-yellow-700">
+                              Found {testResults.duplicate_documents_count} documents with identical content. 
+                              This suggests URL aliasing rather than unique documents.
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 
@@ -330,6 +348,11 @@ function App() {
                                 <div className="font-mono text-xs text-gray-600 break-all">
                                   {doc.id}
                                 </div>
+                                {doc.content_hash && (
+                                  <div className="text-xs text-gray-500 font-mono">
+                                    Hash: {doc.content_hash.substring(0, 16)}...
+                                  </div>
+                                )}
                                 <a 
                                   href={doc.url} 
                                   target="_blank" 
